@@ -1,0 +1,1166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PathSnap — Map Matching Evaluator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<!--
+PathSnap evaluator UI (runs on Laptop 2, talks to the FastAPI server on Laptop 1)
+
+Run:   python -m http.server 8080   (in this folder), then open
+       http://localhost:8080/?api=http://<laptop1-ip>:8000
+Laptop 1: uvicorn api:app --host 0.0.0.0 --port 8000   (CORS is already enabled in api.py)
+-->
+<style>
+[hidden]{display:none!important}
+*{box-sizing:border-box}
+
+:root {
+  /* Core Palette inspired by dark navy cartography & crisp architectural light surfaces */
+  --bg-app: #F3F7FA;
+  --surface: #FFFFFF;
+  --surface-subtle: #F8FAFC;
+  --navy-deep: #07172B;
+  --navy-card: #0D223D;
+  --navy-border: #1A365D;
+  
+  --ink: #0B1E36;
+  --ink-secondary: #475D78;
+  --muted: #7A8FA8;
+  --line: #E1E8F0;
+  
+  /* Signature Accents */
+  --teal: #14B8A6;
+  --teal-bright: #2DD4BF;
+  --teal-glow: rgba(45, 212, 191, 0.22);
+  --blue-gps: #3B82F6;
+  --blue-route: #38BDF8;
+  --amber-clf: #F59E0B;
+  --red-bad: #F43F5E;
+  --green-good: #10B981;
+
+  --font-sans: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  
+  --shadow-sm: 0 1px 3px rgba(7, 23, 43, 0.05);
+  --shadow-md: 0 8px 24px -4px rgba(7, 23, 43, 0.12);
+  --shadow-float: 0 12px 32px rgba(4, 13, 26, 0.35);
+}
+
+body {
+  margin: 0;
+  height: 100vh;
+  background: var(--bg-app);
+  color: var(--ink);
+  font: 14px/1.5 var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input { font: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+
+/* App Shell */
+.app {
+  display: grid;
+  grid-template-columns: 340px 1fr;
+  height: 100%;
+}
+
+/* Left Navigation Rail */
+.rail {
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  z-index: 10;
+  box-shadow: 4px 0 24px rgba(7, 23, 43, 0.03);
+}
+
+.brand-header {
+  padding: 24px 22px 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--teal);
+  margin-bottom: 6px;
+}
+
+.kicker::before {
+  content: "";
+  display: block;
+  width: 18px;
+  height: 2.5px;
+  background: var(--teal-bright);
+  border-radius: 2px;
+}
+
+.brand-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand-underline {
+  position: relative;
+  display: inline-block;
+}
+.brand-underline::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 3.5px;
+  background: var(--teal-bright);
+  border-radius: 2px;
+  opacity: 0.75;
+}
+
+.brand-badge {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--navy-deep);
+  border: 2px solid var(--teal-bright);
+  display: grid;
+  place-items: center;
+  color: var(--teal-bright);
+  box-shadow: 0 0 0 3px var(--teal-glow);
+}
+
+.brand-sub {
+  margin: 6px 0 0;
+  color: var(--ink-secondary);
+  font-size: 13px;
+}
+
+/* API Connection Panel */
+.api-box {
+  padding: 14px 22px;
+  background: var(--surface-subtle);
+  border-bottom: 1px solid var(--line);
+}
+
+.st {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-secondary);
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+  position: relative;
+}
+.dot.ok {
+  background: var(--green-good);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.2);
+}
+.dot.bad {
+  background: var(--red-bad);
+  box-shadow: 0 0 0 3px rgba(244, 63, 94, 0.2);
+}
+
+.api-box form {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+input[type=text] {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 7px 10px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input[type=text]:focus {
+  outline: none;
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--teal-glow);
+}
+
+.btn {
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--navy-deep);
+  background: var(--navy-deep);
+  color: #fff;
+  border-radius: 8px;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn:hover:not(:disabled) {
+  background: #112D4E;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(7, 23, 43, 0.15);
+}
+.btn.ghost {
+  background: #fff;
+  color: var(--ink);
+  border-color: var(--line);
+}
+.btn.ghost:hover:not(:disabled) {
+  background: var(--surface-subtle);
+  border-color: #CBD5E1;
+}
+.btn.accent {
+  background: var(--teal);
+  border-color: var(--teal);
+  color: var(--navy-deep);
+  font-weight: 700;
+}
+.btn.accent:hover:not(:disabled) {
+  background: var(--teal-bright);
+  border-color: var(--teal-bright);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+  transform: none;
+}
+
+/* Trip List */
+.list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px 10px;
+}
+.list-header h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-secondary);
+}
+.pill-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 99px;
+  background: var(--bg-app);
+  color: var(--ink-secondary);
+}
+
+#trips {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 12px 12px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trip {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  padding: 11px 14px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  transition: all 0.15s ease;
+}
+.trip:hover {
+  background: var(--surface-subtle);
+  border-color: var(--line);
+}
+.trip[aria-current=true] {
+  background: var(--navy-deep);
+  color: #fff;
+  box-shadow: 0 6px 16px rgba(7, 23, 43, 0.16);
+}
+.trip b {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.trip small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.trip[aria-current=true] small {
+  color: #94A3B8;
+}
+.trip .acc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--bg-app);
+  color: var(--ink);
+}
+.trip[aria-current=true] .acc {
+  background: rgba(45, 212, 191, 0.16);
+  color: var(--teal-bright);
+}
+
+.foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 22px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Main Workspace */
+.main {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  min-width: 0;
+  min-height: 0;
+}
+
+.bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.bar-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bar h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.status-chip {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 6px;
+  background: #E0F2FE;
+  color: #0369A1;
+}
+
+/* Dark Navy Cartography Map Viewport */
+.mapwrap {
+  position: relative;
+  min-height: 320px;
+  background: var(--navy-deep);
+  overflow: hidden;
+}
+
+/* Subtle architectural grid overlay before tiles load */
+.mapwrap::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: 
+    linear-gradient(to right, rgba(56, 189, 248, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(56, 189, 248, 0.06) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+#map {
+  position: absolute;
+  inset: 0;
+  background: var(--navy-deep);
+  z-index: 2;
+}
+
+.prog {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  z-index: 900;
+  background: linear-gradient(90deg, var(--teal-bright), var(--blue-gps), var(--teal-bright));
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Floating Glassmorphic Layer Legend (Inspired by Screenshot 3) */
+.layers {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 800;
+  background: rgba(11, 29, 51, 0.86);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #F1F5F9;
+  box-shadow: var(--shadow-float);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.layers-title {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #94A3B8;
+  margin-bottom: 2px;
+}
+
+.layers label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 3px 2px;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s;
+}
+.layers label:hover { color: #fff; }
+.layers input[type="checkbox"] {
+  accent-color: var(--teal-bright);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+
+.sw { flex: none; width: 24px; border-top: 3.5px solid; border-radius: 2px; }
+.sw.gps {
+  width: 10px;
+  height: 10px;
+  border: 2px solid rgba(59, 130, 246, 0.45);
+  border-radius: 50%;
+  background: #60A5FA;
+  margin: 0 7px;
+  box-shadow: 0 0 8px #3B82F6;
+}
+.sw.clf { border-top: 3px dashed var(--amber-clf); }
+.sw.hmm { border-color: var(--teal-bright); box-shadow: 0 0 8px rgba(45, 212, 191, 0.5); }
+.sw.bad { border-color: var(--red-bad); }
+
+.note {
+  position: absolute;
+  left: 16px;
+  bottom: 24px;
+  z-index: 800;
+  background: rgba(11, 29, 51, 0.9);
+  color: #CBD5E1;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+/* Empty / Error State Overlay (Inspired by Screenshot 1 & 4) */
+.msg {
+  position: absolute;
+  inset: 0;
+  z-index: 700;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 32px;
+  background: radial-gradient(circle at center, rgba(13, 34, 61, 0.85) 0%, rgba(7, 23, 43, 0.96) 100%);
+  color: #F8FAFC;
+}
+
+.msg-art {
+  width: 240px;
+  height: 96px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  background: rgba(7, 23, 43, 0.7);
+  border: 1px solid rgba(45, 212, 191, 0.25);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.msg-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--teal-bright);
+}
+
+.msg h3 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #FFFFFF;
+}
+
+.msg p {
+  margin: 0;
+  max-width: 46ch;
+  color: #94A3B8;
+  font-size: 14px;
+}
+
+/* Bottom Evaluation Telemetry Deck */
+.results {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  gap: 24px;
+  align-items: stretch;
+  padding: 18px 24px;
+  min-height: 184px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+.results .empty {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 13.5px;
+  background: var(--surface-subtle);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  margin: 0;
+}
+
+/* Hero Accuracy Plate */
+.plate {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-radius: 14px;
+  background: linear-gradient(145deg, var(--navy-deep) 0%, #0F294A 100%);
+  color: #fff;
+  border: 1px solid var(--navy-border);
+  box-shadow: 0 8px 20px rgba(7, 23, 43, 0.14);
+  position: relative;
+  overflow: hidden;
+}
+.plate::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--teal-bright), var(--blue-route));
+}
+.plate-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--teal-bright);
+}
+.plate strong {
+  font-family: var(--font-mono);
+  font-size: 46px;
+  font-weight: 700;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  margin: 6px 0;
+}
+.plate small {
+  color: #94A3B8;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+/* Metrics Comparison Card */
+.metrics-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background: var(--surface-subtle);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 18px;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+th, td {
+  padding: 7px 12px;
+  text-align: right;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+tbody tr:last-child th,
+tbody tr:last-child td {
+  border-bottom: none;
+}
+th:first-child, tbody th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--ink);
+}
+thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 700;
+  padding-top: 2px;
+}
+tbody td {
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.hmm-val {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.delta-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.up { background: rgba(16, 185, 129, 0.14); color: #059669; }
+.down { background: rgba(244, 63, 94, 0.14); color: #E11D48; }
+
+.facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-secondary);
+}
+.facts span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.facts span::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--teal);
+}
+
+.sr { position: absolute; left: -9999px; }
+
+/* Dark Leaflet Control Tweaks */
+.leaflet-control-zoom a {
+  background: rgba(11, 29, 51, 0.9) !important;
+  color: #F8FAFC !important;
+  border-color: rgba(56, 189, 248, 0.25) !important;
+}
+.leaflet-control-zoom a:hover {
+  background: #16365C !important;
+}
+.leaflet-control-attribution {
+  background: rgba(7, 23, 43, 0.75) !important;
+  color: #94A3B8 !important;
+}
+.leaflet-control-attribution a { color: #38BDF8 !important; }
+
+@media (max-width: 960px) {
+  body { height: auto; }
+  .app { grid-template-columns: 1fr; height: auto; }
+  .rail { max-height: 46vh; }
+  .results { grid-template-columns: 1fr; }
+  .mapwrap { height: 58vh; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .prog { animation: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <header class="brand-header">
+      <div class="kicker">Map Matching</div>
+      <h1 class="brand-title">
+        <span>Path<span class="brand-underline">Snap</span></span>
+        <span class="brand-badge" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="3 11 22 2 13 21 11 13 3 11"></polygon>
+          </svg>
+        </span>
+      </h1>
+      <p class="brand-sub">Recover the true road trajectory from noisy GPS</p>
+    </header>
+
+    <div class="api-box">
+      <div class="st"><span class="dot" id="dot"></span><span id="stat">Connecting…</span></div>
+      <form id="addr">
+        <input type="text" id="base" aria-label="API address" placeholder="http://localhost:8000">
+        <button class="btn ghost" type="submit">Connect</button>
+      </form>
+    </div>
+
+    <div class="list-header">
+      <h2>Evaluation Trips</h2>
+      <span class="pill-count" id="count">0</span>
+    </div>
+    <ul id="trips"></ul>
+    <div class="foot" id="last"><span>Ready</span><span>Idle</span></div>
+  </aside>
+
+  <section class="main">
+    <div class="bar">
+      <div class="bar-title-group">
+        <h2 id="title">No trip selected</h2>
+        <span class="status-chip" id="trip-badge" hidden>Classifier + HMM</span>
+      </div>
+      <button class="btn accent" id="again" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+        Run again
+      </button>
+    </div>
+
+    <div class="mapwrap">
+      <div id="map"></div>
+      <div class="prog" id="prog" hidden></div>
+      
+      <div class="layers" id="layers" hidden>
+        <div class="layers-title">Map Layers</div>
+        <label><input type="checkbox" data-k="gps" checked><i class="sw gps"></i>GPS observations</label>
+        <label id="row-clf"><input type="checkbox" data-k="clf"><i class="sw clf"></i>Classifier only</label>
+        <label><input type="checkbox" data-k="hmm" checked><i class="sw hmm"></i>Route with HMM</label>
+        <label id="row-bad"><input type="checkbox" data-k="bad" checked><i class="sw bad"></i>Wrong segments</label>
+      </div>
+
+      <div class="note" id="tilenote" hidden>Basemap tiles unavailable. Vector routes are still drawn.</div>
+      <div class="msg" id="msg"></div>
+    </div>
+
+    <div class="results" id="results">
+      <p class="empty">Select an evaluation trip from the sidebar to inspect recovered segments and accuracy metrics.</p>
+    </div>
+  </section>
+</div>
+
+<div class="sr" aria-live="polite" id="live"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const h = (t, a = {}, ...k) => {
+  const e = document.createElement(t);
+  for (const [n, v] of Object.entries(a)) {
+    if (n.startsWith('on')) e.addEventListener(n.slice(2), v);
+    else if (v != null && v !== false) e.setAttribute(n, v === true ? '' : v);
+  }
+  e.append(...k.flat().filter(x => x != null && x !== false));
+  return e;
+};
+const store = (k, v) => {
+  try { return v === undefined ? localStorage.getItem(k) : localStorage.setItem(k, v); }
+  catch { return null; }
+};
+
+const S = {
+  base: (new URLSearchParams(location.search).get('api') || store('pathsnap_api') || 'http://localhost:8000').replace(/\/+$/, ''),
+  trips: [],
+  sel: null,
+  sum: {},
+  req: 0,
+  ctl: null,
+  vis: { gps: true, clf: false, hmm: true, bad: true }
+};
+
+/* ---- API ---- */
+async function api(path, opt = {}, ms = 60000) {
+  const ctl = new AbortController(), t0 = performance.now(), to = setTimeout(() => ctl.abort(), ms);
+  opt.signal?.addEventListener('abort', () => ctl.abort());
+  let st = 'offline';
+  try {
+    const r = await fetch(S.base + path, { ...opt, signal: ctl.signal });
+    st = r.status;
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : `The API returned status ${r.status}.`);
+    return body;
+  } finally {
+    clearTimeout(to);
+    $('#last').replaceChildren(
+      h('span', {}, `${opt.method || 'GET'} ${path}`),
+      h('span', {}, `${st} · ${Math.round(performance.now() - t0)}ms`)
+    );
+  }
+}
+
+const adaptTrips = raw => (Array.isArray(raw) ? raw : raw.trips || []).map(t => typeof t === 'object' ? { id: String(t.trip_id), n: t.n_observations } : { id: String(t) });
+
+function adapt(raw) {
+  const r = {
+    id: String(raw.trip_id),
+    gps: raw.gps || [],
+    n: raw.n_observations ?? raw.gps?.length,
+    ms: raw.inference_ms,
+    routes: {
+      hmm: raw.routes?.hmm?.segments || [],
+      clf: raw.routes?.classifier_only?.segments || []
+    },
+    m: {
+      hmm: raw.metrics?.hmm || {},
+      clf: raw.metrics?.classifier_only || null
+    }
+  };
+  if (!r.gps.length && !r.routes.hmm.length) throw new Error('The API returned no GPS points or route for this trip.');
+  return r;
+}
+
+/* ---- Decorative SVG Graphic for Overlay States ---- */
+function heroIllustration() {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 240 96');
+  svg.setAttribute('width', '100%');
+  svg.setAttribute('height', '100%');
+  svg.innerHTML = `
+    <g stroke="#1E3A5F" stroke-width="1">
+      <line x1="0" y1="24" x2="240" y2="24"/><line x1="0" y1="48" x2="240" y2="48"/><line x1="0" y1="72" x2="240" y2="72"/>
+      <line x1="48" y1="0" x2="48" y2="96"/><line x1="96" y1="0" x2="96" y2="96"/><line x1="144" y1="0" x2="144" y2="96"/><line x1="192" y1="0" x2="192" y2="96"/>
+    </g>
+    <path d="M 16 72 L 96 72 L 144 24 L 224 24" fill="none" stroke="#2DD4BF" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#3B82F6">
+      <circle cx="22" cy="64" r="8" fill-opacity="0.22"/><circle cx="22" cy="64" r="3"/>
+      <circle cx="58" cy="79" r="8" fill-opacity="0.22"/><circle cx="58" cy="79" r="3"/>
+      <circle cx="94" cy="63" r="8" fill-opacity="0.22"/><circle cx="94" cy="63" r="3"/>
+      <circle cx="122" cy="49" r="8" fill-opacity="0.22"/><circle cx="122" cy="49" r="3"/>
+      <circle cx="152" cy="17" r="8" fill-opacity="0.22"/><circle cx="152" cy="17" r="3"/>
+      <circle cx="198" cy="31" r="8" fill-opacity="0.22"/><circle cx="198" cy="31" r="3"/>
+    </g>
+  `;
+  return h('div', { class: 'msg-art' }, svg);
+}
+
+/* ---- UI state ---- */
+function setStatus(k, t) {
+  $('#dot').className = 'dot ' + k;
+  $('#stat').textContent = t;
+}
+
+function showMsg(kicker, t, p, act) {
+  $('#msg').replaceChildren(
+    heroIllustration(),
+    h('span', { class: 'msg-kicker' }, kicker),
+    h('h3', {}, t),
+    h('p', {}, p),
+    act ? h('button', { class: 'btn accent', onclick: act[1] }, act[0]) : null
+  );
+  $('#msg').hidden = false;
+}
+
+const hideMsg = () => { $('#msg').hidden = true; };
+const pct = v => typeof v === 'number' ? (v * 100).toFixed(1) + '%' : '—';
+
+function renderTrips() {
+  $('#count').textContent = S.trips.length;
+  const busy = !$('#prog').hidden;
+  $('#trips').replaceChildren(...S.trips.map(t =>
+    h('li', {},
+      h('button', { class: 'trip', 'aria-current': S.sel === t.id, onclick: () => run(t.id) },
+        h('span', {},
+          h('b', {}, `#${t.id}`),
+          h('small', {}, t.n ? `${t.n} GPS observations` : 'Observation sequence')
+        ),
+        (S.sel === t.id && busy) || S.sum[t.id] != null
+          ? h('span', { class: 'acc' }, S.sel === t.id && busy ? 'Running…' : pct(S.sum[t.id]))
+          : null
+      )
+    )
+  ));
+}
+
+function renderResults(r) {
+  const H = r.m.hmm, C = r.m.clf;
+  const dl = k => {
+    if (!C || typeof H[k] !== 'number' || typeof C[k] !== 'number') return '—';
+    const d = (H[k] - C[k]) * 100;
+    return h('span', { class: 'delta-badge ' + (d > 0 ? 'up' : d < 0 ? 'down' : '') }, `${d > 0 ? '+' : ''}${d.toFixed(1)} pts`);
+  };
+
+  $('#results').replaceChildren(
+    h('div', { class: 'plate' },
+      h('span', { class: 'plate-label' }, 'Top-1 Accuracy (HMM)'),
+      h('strong', {}, pct(H.top1_accuracy)),
+      h('small', {}, C ? `Classifier baseline: ${pct(C.top1_accuracy)}` : 'Viterbi sequence decoded')
+    ),
+    h('div', { class: 'metrics-panel' },
+      h('table', {},
+        h('thead', {},
+          h('tr', {},
+            h('th', {}, 'Evaluation Metric'),
+            ...['Classifier Only', 'With HMM', 'Improvement'].map(x => h('th', {}, x))
+          )
+        ),
+        h('tbody', {},
+          ...[
+            ['Top-1 Segment Accuracy', 'top1_accuracy'],
+            ['Macro F1 Score', 'macro_f1'],
+            ['Route Continuity', 'route_continuity']
+          ].map(([n, k]) =>
+            h('tr', {},
+              h('th', { scope: 'row' }, n),
+              h('td', {}, C ? pct(C[k]) : '—'),
+              h('td', { class: 'hmm-val' }, pct(H[k])),
+              h('td', {}, dl(k))
+            )
+          )
+        )
+      ),
+      h('p', { class: 'facts' },
+        h('span', {}, `${r.n ?? '—'} noisy GPS pings`),
+        typeof r.ms === 'number' && h('span', {}, `${Math.round(r.ms)} ms inference latency`),
+        h('span', {}, `${r.routes.hmm.length} road arcs matched`)
+      )
+    )
+  );
+}
+
+/* ---- Map ---- */
+let map;
+const lg = {};
+
+function initMap() {
+  if (!window.L) {
+    showMsg('Dependency Missing', 'Map library not loaded', 'Leaflet comes from cdnjs.cloudflare.com, so Laptop 2 needs internet (or a local copy of Leaflet).');
+    return;
+  }
+  map = L.map('map', { preferCanvas: true, zoomSnap: 0.5 }).setView([56.8, 35.9], 12);
+  // Dark matter tiles match the midnight navy cartography aesthetic
+ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap contributors'
+  }).on('tileerror', () => { $('#tilenote').hidden = false; }).addTo(map);
+
+  ['gps', 'clf', 'hmm', 'bad'].forEach(k => lg[k] = L.layerGroup());
+  $('#layers').addEventListener('change', e => {
+    if (e.target.dataset.k) {
+      S.vis[e.target.dataset.k] = e.target.checked;
+      sync();
+    }
+  });
+}
+
+function sync() {
+  if (map) ['gps', 'clf', 'hmm', 'bad'].forEach(k => {
+    map.removeLayer(lg[k]);
+    if (S.vis[k]) lg[k].addTo(map);
+  });
+}
+
+function clearMap() {
+  Object.values(lg).forEach(g => g.clearLayers());
+  $('#layers').hidden = true;
+}
+
+function draw(r) {
+  if (!map) return;
+  clearMap();
+
+  const seg = (s, o) => L.polyline(s.coords, { lineCap: 'round', lineJoin: 'round', ...o })
+    .bindTooltip(`Road Arc #${s.arc_id}`, { sticky: true });
+
+  // Classifier baseline (dashed amber)
+  r.routes.clf.forEach(s => seg(s, { color: '#F59E0B', weight: 4, dashArray: '7 7', opacity: 0.85 }).addTo(lg.clf));
+
+  // HMM recovered route (glowing electric teal)
+  r.routes.hmm.forEach(s => {
+    seg(s, { color: '#2DD4BF', weight: 8, opacity: 0.22 }).addTo(lg.hmm);
+    seg(s, { color: '#2DD4BF', weight: 4, opacity: 0.95 }).addTo(lg.hmm);
+    if (s.correct === false) {
+      seg(s, { color: '#F43F5E', weight: 5, opacity: 0.95 }).addTo(lg.bad);
+    }
+  });
+
+  // Noisy GPS trajectory & radar-style observation nodes
+  const pts = r.gps.map(p => [p[0], p[1]]);
+  L.polyline(pts, { color: '#60A5FA', weight: 1.5, opacity: 0.35, dashArray: '3 4' }).addTo(lg.gps);
+
+  r.gps.forEach(p => {
+    // Translucent outer accuracy halo
+    L.circleMarker([p[0], p[1]], {
+      radius: 7,
+      stroke: false,
+      fillColor: '#3B82F6',
+      fillOpacity: 0.22,
+      interactive: false
+    }).addTo(lg.gps);
+    // Crisp inner GPS dot
+    L.circleMarker([p[0], p[1]], {
+      radius: 3.2,
+      color: '#DBEAFE',
+      weight: 1,
+      fillColor: '#3B82F6',
+      fillOpacity: 1
+    }).bindTooltip(`t = ${p[2]} s`).addTo(lg.gps);
+  });
+
+  if (pts.length) {
+    [['Origin', pts[0], '#10B981'], ['Destination', pts[pts.length - 1], '#F43F5E']].forEach(([n, c, f]) =>
+      L.circleMarker(c, {
+        radius: 7,
+        color: '#07172B',
+        weight: 2.5,
+        fillColor: f,
+        fillOpacity: 1
+      }).bindTooltip(n, { permanent: true, direction: 'top', offset: [0, -8] }).addTo(lg.gps)
+    );
+  }
+
+  $('#row-clf').hidden = !r.routes.clf.length;
+  $('#row-bad').hidden = !r.routes.hmm.some(s => s.correct === false);
+  $('#layers').hidden = false;
+  sync();
+
+  const all = [...pts, ...r.routes.hmm.flatMap(s => s.coords)];
+  map.invalidateSize();
+  if (all.length) map.fitBounds(all, { padding: [48, 48] });
+}
+
+/* ---- Flow ---- */
+async function loadTrips() {
+  setStatus('', `Connecting to ${S.base}…`);
+  try {
+    S.trips = adaptTrips(await api('/trips', {}, 8000));
+    setStatus('ok', `Connected · ${S.base}`);
+    renderTrips();
+    S.sel
+      ? hideMsg()
+      : showMsg('Map Matching Ready', 'Which road was taken?', 'Select an evaluation trip on the left to reconstruct the true route from noisy GPS observations.');
+  } catch (e) {
+    S.trips = [];
+    renderTrips();
+    setStatus('bad', `Disconnected · ${S.base}`);
+    showMsg(
+      'Backend Offline',
+      'Waiting for PathSnap API',
+      'Start the FastAPI server on Laptop 1 with --host 0.0.0.0 and CORS enabled, or update the endpoint address on the left.',
+      ['Retry Connection', loadTrips]
+    );
+  }
+}
+
+async function run(id) {
+  S.ctl?.abort();
+  S.ctl = new AbortController();
+  const my = ++S.req;
+  S.sel = id;
+
+  $('#title').textContent = `Trip #${id}`;
+  $('#trip-badge').hidden = false;
+  $('#again').disabled = false;
+  hideMsg();
+  $('#prog').hidden = false;
+  renderTrips();
+  $('#live').textContent = `Running trip ${id}`;
+
+  try {
+    const r = adapt(await api('/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trip_id: id }),
+      signal: S.ctl.signal
+    }));
+    if (my !== S.req) return;
+    S.sum[id] = r.m.hmm.top1_accuracy;
+    draw(r);
+    renderResults(r);
+    $('#live').textContent = `Trip ${id} finished`;
+  } catch (e) {
+    if (my !== S.req || (e.name === 'AbortError' && S.ctl.signal.aborted)) return;
+    clearMap();
+    $('#results').replaceChildren(h('p', { class: 'empty' }, 'No telemetry results available for this trip.'));
+    showMsg(
+      'Inference Error',
+      'Route reconstruction failed',
+      e.name === 'AbortError' ? 'The API timed out before returning a trajectory.' : e.message,
+      ['Try Again', () => run(id)]
+    );
+  } finally {
+    if (my === S.req) {
+      $('#prog').hidden = true;
+      renderTrips();
+    }
+  }
+}
+
+$('#again').onclick = () => S.sel && run(S.sel);
+$('#base').value = S.base;
+$('#addr').onsubmit = e => {
+  e.preventDefault();
+  S.base = $('#base').value.trim().replace(/\/+$/, '');
+  store('pathsnap_api', S.base);
+  S.sel = null;
+  S.sum = {};
+  $('#trip-badge').hidden = true;
+  loadTrips();
+};
+
+initMap();
+loadTrips();
+</script>
+</body>
+</html>
